@@ -1,0 +1,84 @@
+{
+  "name": "@local/dsh-next",
+  "version": "0.8.0+dsh.0.2.1-alpha.5",
+  "private": true,
+  "type": "module",
+  "description": "Session-scoped NEXT execution and context efficiency for DeepSeek Harness",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/xhnhhnh/dsh-next.git"
+  },
+  "bugs": {
+    "url": "https://github.com/xhnhhnh/dsh-next/issues"
+  },
+  "homepage": "https://github.com/xhnhhnh/dsh-next#readme",
+  "main": "./lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./meter": "./lib/meter.js",
+    "./state": "./lib/state.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/*.js",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "check": "node scripts/check.mjs",
+    "prepack": "npm run build && npm run check"
+  },
+  "dependencies": {
+    "zod": "4.6.5"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-typert-protocol": "0.2.1-alpha.5",
+    "@deepseek-ai/dsh-session": "0.2.1-alpha.5",
+    "@deepseek-ai/dsh-tools": "0.2.1-alpha.5",
+    "@deepseek-ai/dsh-llm": "0.2.1-alpha.5",
+    "@deepseek-ai/schemastery": "~3.18.5-alpha.2"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-typert-protocol": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-session": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-tools": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-llm": {
+      "optional": true
+    },
+    "@deepseek-ai/schemastery": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-chat",
+        "@deepseek-ai/dsh-client-ui-primitives",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-locale"
+      ]
+    }
+  },
+  "dshCompatibility": {
+    "harnessVersion": "0.2.1-alpha.5"
+  }
+}

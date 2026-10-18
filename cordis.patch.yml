@@ -1,0 +1,7 @@
+- insert:
+    - id: dsh-next
+      name: '@local/dsh-next'
+      config:
+        deduplicateReads: true
+        efficiencyGuidance: false
+        prices: []

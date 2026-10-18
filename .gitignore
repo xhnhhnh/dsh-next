@@ -1,0 +1,17 @@
+node_modules/
+work/
+outputs/
+*.tgz
+*.zip
+*.log
+.env
+.env.*
+!.env.example
+.dsh/
+coverage/
+dist/
+playwright-report/
+test-results/
+*-budget.json
+*-budget.lock
+.credentials*

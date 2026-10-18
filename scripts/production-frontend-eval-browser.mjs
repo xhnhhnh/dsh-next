@@ -1,0 +1,56 @@
+// Independent acceptance: reads generated projects; never edits their source.
+import {readFileSync,writeFileSync,mkdirSync,existsSync,readdirSync,statSync} from 'node:fs'
+import {resolve,join,extname,relative,isAbsolute,sep} from 'node:path'
+import {createServer} from 'node:http'
+import {createRequire} from 'node:module'
+import {spawn} from 'node:child_process'
+import {hash,scoreFunctional,REVIEW_RUBRIC} from './production-frontend-eval-core.mjs'
+const arg=name=>process.argv.find(value=>value.startsWith(name+'='))?.slice(name.length+1)
+if(!arg('--out'))throw new Error('Expected --out=<prepared evaluation directory>')
+const output=resolve(arg('--out')),publicDir=join(output,'public'),manifest=JSON.parse(readFileSync(join(publicDir,'manifest.json'),'utf8'))
+const json=(path,value)=>writeFileSync(path,JSON.stringify(value,null,2)+'\n')
+const dep=resolve(process.env.NEXT_PLAYWRIGHT_PATH??join(import.meta.dirname,'../node_modules/playwright')),require=createRequire(join(dep,'package.json')),{chromium}=require(dep)
+const browserPath=arg('--browser')??join(process.env.LOCALAPPDATA,'ms-playwright/chromium-1243/chrome-win64/chrome.exe')
+const browser=await chromium.launch({headless:true,executablePath:browserPath}),results=[],servers=[]
+const sourceHash=directory=>{
+ const hashes={},walk=(current,prefix='')=>{for(const name of readdirSync(current)){if(['node_modules','dist','.git'].includes(name))continue;const path=join(current,name),rel=prefix+name;if(statSync(path).isDirectory())walk(path,rel+'/');else hashes[rel]=hash(readFileSync(path))}};walk(directory);return hashes
+}
+const build=directory=>new Promise((done,reject)=>{const child=spawn(process.execPath,[join(directory,'node_modules/vite/bin/vite.js'),'build'],{cwd:directory,windowsHide:true,stdio:['ignore','pipe','pipe']});let stdout='',stderr='';child.stdout.on('data',data=>stdout+=data);child.stderr.on('data',data=>stderr+=data);const timer=setTimeout(()=>child.kill(),120000);child.on('error',reject);child.on('close',code=>{clearTimeout(timer);done({code,stdout,stderr})})})
+const serve=directory=>new Promise(done=>{const server=createServer((request,response)=>{let path;try{path=resolve(directory,'.'+decodeURIComponent(new URL(request.url,'http://127.0.0.1').pathname))}catch{response.writeHead(400);response.end();return}const rel=relative(directory,path);if(rel==='..'||rel.startsWith('..'+sep)||isAbsolute(rel)){response.writeHead(403);response.end();return}if(!existsSync(path)||statSync(path).isDirectory())path=join(directory,'index.html');response.setHeader('Content-Type',({'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.svg':'image/svg+xml'})[extname(path)]??'application/octet-stream');response.end(readFileSync(path))});server.listen(0,'127.0.0.1',()=>{servers.push(server);done('http://127.0.0.1:'+server.address().port)})})
+try{
+ for(const project of manifest.projects){
+  const before=sourceHash(project.directory),built=await build(project.directory),observations={},evidence=[],screenshots=[],errors=[]
+  mkdirSync(join(publicDir,'screenshots'),{recursive:true});writeFileSync(join(publicDir,project.label+'-build.log'),built.stdout+'\n'+built.stderr)
+  if(built.code!==0){results.push({label:project.label,buildExitCode:built.code,observations,score:scoreFunctional(observations),criticalFailures:['Production build failed'],sourceHashes:before,sourceUnchanged:JSON.stringify(before)===JSON.stringify(sourceHash(project.directory))});continue}
+  const origin=await serve(join(project.directory,'dist')),context=await browser.newContext({viewport:{width:1440,height:900}}),page=await context.newPage()
+  page.setDefaultTimeout(3000)
+  page.on('pageerror',error=>errors.push(error.message));page.on('dialog',dialog=>dialog.accept())
+  await context.route('**/*',route=>new URL(route.request().url()).origin===origin?route.continue():route.abort())
+  const test=async(id,fn)=>{try{observations[id]=(await fn())===true;evidence.push({id,passed:observations[id]})}catch(error){observations[id]=false;evidence.push({id,passed:false,error:error.message.slice(0,1000)})}}
+  const by=id=>page.getByTestId(id),rows=()=>by('task-row'),add=async(title,status,priority)=>{await by('task-title').fill(title);await by('task-status').selectOption(status);await by('task-priority').selectOption(priority);await by('task-submit').click()}
+  await test('startup',async()=>{await page.goto(origin,{waitUntil:'networkidle'});await page.evaluate(()=>localStorage.clear());await page.reload({waitUntil:'networkidle'});return await by('task-form').isVisible()&&await by('task-title').isVisible()&&await by('task-submit').isVisible()&&errors.length===0})
+  await test('empty',async()=>await rows().count()===0&&await by('task-empty').isVisible())
+  await test('create',async()=>{await add('季度方案','todo','high');return await rows().count()===1&&await rows().first().getByTestId('task-row-title').innerText()==='季度方案'})
+  await test('validation',async()=>{const count=await rows().count();await by('task-title').fill('   ');await by('task-submit').click();return await rows().count()===count&&await by('task-error').isVisible()&&await by('task-error').getAttribute('role')==='alert'})
+  await test('edit',async()=>{await rows().first().getByTestId('task-edit').click();if(await by('task-title').inputValue()!=='季度方案')return false;await add('季度方案（修订）','doing','medium');return await rows().count()===1&&await rows().first().getByTestId('task-row-title').innerText()==='季度方案（修订）'})
+  await test('metadata',async()=>{if(!await rows().first().getByTestId('task-row-status').isVisible()||!await rows().first().getByTestId('task-row-priority').isVisible())return false;await rows().first().getByTestId('task-edit').click();const okay=await by('task-status').inputValue()==='doing'&&await by('task-priority').inputValue()==='medium';await by('task-submit').click();return okay})
+  await test('filters',async()=>{await add('资料归档','done','low');if(await rows().count()!==2)return false;await by('task-search').fill('季度');if(await rows().count()!==1)return false;await by('status-filter').selectOption('done');if(await rows().count()!==0)return false;await by('task-search').fill('');if(await rows().count()!==1)return false;await by('priority-filter').selectOption('high');if(await rows().count()!==0)return false;await by('priority-filter').selectOption('low');if(await rows().count()!==1)return false;await by('priority-filter').selectOption('all');await by('status-filter').selectOption('all');return await rows().count()===2})
+  await test('persistence',async()=>{await by('task-search').fill('');await by('priority-filter').selectOption('all');await by('status-filter').selectOption('all');const stored=await page.evaluate(()=>localStorage.getItem('next-productivity-tasks-v1'));await page.reload({waitUntil:'networkidle'});return Boolean(stored)&&await rows().count()===2&&await by('task-row-title').allTextContents().then(values=>values.includes('季度方案（修订）')&&values.includes('资料归档'))})
+  await test('delete',async()=>{const count=await rows().count();if(count<1)return false;await rows().first().getByTestId('task-delete').click();if(await rows().count()!==count-1)return false;while(await rows().count()>0)await rows().first().getByTestId('task-delete').click();return await rows().count()===0&&await by('task-empty').isVisible()})
+  // Screenshots show the same seed tasks inserted through each app's own UI.
+  try{await page.evaluate(()=>localStorage.clear());await page.reload({waitUntil:'networkidle'});for(const task of[['梳理本周项目重点','doing','high'],['整理用户访谈记录','todo','medium'],['完成季度复盘','done','low']])await add(...task)}catch(error){evidence.push({id:'screenshot-seeding',error:error.message.slice(0,1000)})}
+  const layout={}
+  for(const viewport of manifest.viewports){await page.setViewportSize(viewport);await page.waitForTimeout(100);const file=project.label+'-'+viewport.width+'x'+viewport.height+'.png';await page.screenshot({path:join(publicDir,'screenshots',file),fullPage:true});screenshots.push('screenshots/'+file);layout[viewport.width]=await page.evaluate(()=>({scrollWidth:document.documentElement.scrollWidth,innerWidth:window.innerWidth,horizontalOverflow:document.documentElement.scrollWidth>window.innerWidth+1,interactive:[...document.querySelectorAll('button,input,select')].map(element=>({tag:element.tagName,name:element.getAttribute('aria-label')??element.labels?.[0]?.innerText??element.innerText,disabled:element.disabled,box:{x:element.getBoundingClientRect().x,y:element.getBoundingClientRect().y,width:element.getBoundingClientRect().width,height:element.getBoundingClientRect().height}}))}))}
+  const after=sourceHash(project.directory),criticalFailures=[]
+  if(!observations.startup)criticalFailures.push('App did not start cleanly with required controls')
+  if(!observations.persistence)criticalFailures.push('Persistence acceptance failed or could not be established')
+  if(['create','edit','delete'].some(id=>!observations[id]))criticalFailures.push('At least one core CRUD acceptance failed')
+  results.push({label:project.label,buildExitCode:built.code,observations,evidence,score:scoreFunctional(observations),criticalFailures,pageErrors:errors,screenshots,layout,sourceHashes:before,sourceUnchanged:JSON.stringify(before)===JSON.stringify(after),manualReview:{rubric:REVIEW_RUBRIC,status:'Pending blinded independent reviewer'}})
+  await context.close()
+ }
+ json(join(publicDir,'functional-results.json'),{status:'Complete',at:new Date().toISOString(),results,paidCalls:0,scoringBlinded:true,generatedSourceEdited:false})
+ const escape=value=>String(value).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('"','&quot;')
+ const html=`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>NEXT 真实前端盲评</title><style>body{margin:24px;background:#f4f5f8;font-family:system-ui;color:#172033}h1{font-size:24px}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px}.panel{background:white;border-radius:12px;padding:16px}img{width:100%;border:1px solid #ddd;margin:8px 0}.mobile{max-width:390px;display:block;margin:auto}p{line-height:1.7}a{color:#315fbd}@media(max-width:720px){.grid{grid-template-columns:1fr}body{margin:12px}}</style><h1>个人任务看板 · A/B 独立盲评</h1><p>同模板、同需求、同模型与工具。身份在评分封存前隐藏。截图来自交付原码，验收没有修改生成的源码。</p><div class="grid">${results.map(result=>`<section class="panel"><h2>项目 ${result.label}</h2><p>功能 ${result.score.earned}/60；其余 40 分待独立盲评。</p><p>${result.criticalFailures.map(escape).join('；')||'核心验收通过'}</p>${(result.screenshots??[]).map(file=>`<a href="${file}" target="_blank"><img ${file.includes('390x')?'class="mobile"':''} src="${file}" alt="项目 ${result.label} ${file.includes('390x')?'手机':'桌面'}截图"></a>`).join('')}</section>`).join('')}</div><p><a href="functional-results.json">机器可读验收记录</a></p></html>`
+ writeFileSync(join(publicDir,'preview.html'),html)
+ console.log(JSON.stringify({status:'Complete',output:publicDir,results:results.map(result=>({label:result.label,functional:result.score.earned,criticalFailures:result.criticalFailures,sourceUnchanged:result.sourceUnchanged}))}))
+}finally{await browser.close();await Promise.all(servers.map(server=>new Promise(done=>server.close(done))))}

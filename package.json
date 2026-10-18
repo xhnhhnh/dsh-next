@@ -25,6 +25,8 @@
     "lib/*.js",
     "cordis.patch.yml",
     "README.md",
+    "docs/*.md",
+    "THIRD_PARTY_NOTICES.md",
     "LICENSE"
   ],
   "scripts": {
